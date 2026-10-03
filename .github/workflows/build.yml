@@ -1,0 +1,97 @@
+name: Build Vivify Quest
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract Vivify source
+        run: |
+          mkdir vivify-src
+          unzip -o Vivify-Standalone-0.6.14.zip -d vivify-src
+
+      - name: Locate project root
+        id: root
+        run: |
+          ROOT="$(find vivify-src -name qpm.json -printf '%h\n' | head -n 1)"
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "Using project root: $ROOT"
+          test -f "$ROOT/qpm.json"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build jq file unzip
+
+      - name: Install QPM
+        uses: Fernthedev/qpm-action@v1
+        with:
+          workflow_token: ${{ secrets.GITHUB_TOKEN }}
+          qpm_version: version@1.5.11
+          restore: false
+          cache: false
+          resolve_ndk: false
+
+      - name: Install Android NDK
+        id: setup_ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: false
+
+      - name: Restore dependencies
+        working-directory: ${{ steps.root.outputs.root }}
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup_ndk.outputs.ndk-path }}
+        run: |
+          echo "$ANDROID_NDK_HOME" > ndkpath.txt
+          qpm restore
+
+      - name: Build Vivify
+        working-directory: ${{ steps.root.outputs.root }}
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup_ndk.outputs.ndk-path }}
+        run: |
+          qpm s build -- -clean
+
+      - name: Package QMOD
+        working-directory: ${{ steps.root.outputs.root }}
+        
+        run: |
+          python3 scripts/package_qmod.py
+
+      - name: Find QMOD
+        id: qmod
+        working-directory: ${{ steps.root.outputs.root }}
+        run: |
+          QMOD="$(find . -name '*.qmod' | head -n 1)"
+          test -n "$QMOD"
+          echo "path=$QMOD" >> "$GITHUB_OUTPUT"
+          echo "Found $QMOD"
+
+      - name: Verify ARM64
+        working-directory: ${{ steps.root.outputs.root }}
+        run: |
+          unzip -p "${{ steps.qmod.outputs.path }}" libVivify.so > /tmp/libVivify.so
+          file /tmp/libVivify.so
+          file /tmp/libVivify.so | grep -Ei "ARM|aarch64"
+
+      - name: Upload QMOD
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vivify-Quest-0.6.14
+          path: ${{ steps.root.outputs.root }}/release/Vivify-Quest-0.6.14.qmod
+          if-no-files-found: error
